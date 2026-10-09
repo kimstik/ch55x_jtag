@@ -53,9 +53,15 @@ def bit_addr(b):
 
 
 class Layout(object):
-    def __init__(self, size, common=0x8000, window=0x8000, sel=0x9F, mask=0x07):
-        self.common, self.window, self.sel, self.mask = common, window, sel, mask
-        self.nbanks = max(1, size // window)
+    """Only the symmetric layout is modelled: the common area and the window
+    are both 0x8000 bytes, bank N is at file offset N*0x8000, bank 0 in the
+    window mirrors the common area. That is the CC2541 and C8051F12x layout."""
+
+    def __init__(self, size, common=0x8000, sel=0x9F, mask=0x07):
+        if common != 0x10000 - common:
+            raise ValueError("only common == window == 0x8000 is supported")
+        self.common, self.window, self.sel, self.mask = common, common, sel, mask
+        self.nbanks = max(1, size // self.window)
 
     def va(self, bank, addr):
         """16-bit code address as seen with `bank` selected -> virtual address."""
@@ -204,7 +210,10 @@ class Emu(object):
         """Give up on the current path: back to the last followed call site."""
         if not self.frames:
             return False
-        return self.resume(self.frames.pop())
+        f = self.frames.pop()
+        if f.skip:
+            self.blk.inline.append((f.ret, f.skip))
+        return self.resume(f)
 
     def leave(self):
         """The path went into a bank: every followed call is a transfer, not a
@@ -244,7 +253,12 @@ class Emu(object):
 
     def switch(self, table16):
         """jmp @A+DPTR with unknown A over a table of ljmp: collect the cases."""
-        base = self.lay.va(self.get(self.lay.sel) or 0, table16)
+        bank = self.get(self.lay.sel)
+        if table16 >= self.lay.common and bank is None:
+            self.blk.unresolved.append((self.here(), "bank unknown"))
+            return
+        base = self.lay.va((bank or 0) & self.lay.mask, table16)
+        found = 0
         for i in range(SWITCH_MAX):
             e = self.read(base + 3 * i, 3)
             if not e or e[0] != 0x02:
@@ -252,6 +266,9 @@ class Emu(object):
             dst = self.near(e[1] << 8 | e[2])
             if dst is not None:
                 self.blk.succ.append(dst)
+                found += 1
+        if not found:
+            self.blk.unresolved.append((self.here(), "A/DPTR unknown"))
 
     # -- instruction semantics ---------------------------------------------------
 
@@ -295,6 +312,11 @@ class Emu(object):
                 f = self.frames.pop()
                 self.pc = f.ret
                 return True
+            if self.frames and t < self.lay.common:
+                # dispatched into the common area (bank byte 0): a transfer too
+                self.blk.edges.append(Edge((self.here(), t, "call", False)))
+                self.blk.tramps.update(f.entry for f in self.frames)
+                return self.leave()
             return self.jump(t)
 
         # data movement
@@ -338,10 +360,11 @@ class Emu(object):
             if op == 0x83:
                 l, h, bank = nxt & 0xFF, (nxt >> 8) & 0xFF, self.lay.bank_of(self.cur) or 0
             v = None
-            if a is not None and l is not None and h is not None and bank is not None:
+            if a is not None and l is not None and h is not None:
                 t = (a + (h << 8 | l)) & 0xFFFF
-                r = self.read(self.lay.va(bank & self.lay.mask, t), 1)
-                v = r[0] if r else None
+                if bank is not None or t < self.lay.common:  # common needs no bank
+                    r = self.read(self.lay.va((bank or 0) & self.lay.mask, t), 1)
+                    v = r[0] if r else None
                 for f in self.frames:
                     if 0 <= t - (f.ret & 0xFFFF) < 8:
                         f.skip = max(f.skip, t - (f.ret & 0xFFFF) + 1)
@@ -372,8 +395,10 @@ class Emu(object):
             # anything else may touch A, C and a direct operand
             self.set(ACC, None)
             self.carry = None
-            if op in (0x05, 0x15, 0xC5):
+            if op in (0x05, 0x15, 0xC5, 0x86, 0x87):
                 self.set(ins[1], None)
+            if op & 0xF8 in (0x08, 0x18, 0xC8):
+                self.set(op & 7, None)
             if op in (0x84, 0xA4):
                 self.set(B, None)
         return True
@@ -458,7 +483,7 @@ def analyze(read, layout, roots, sweep=True):
     for t in tramps:
         for b in res.functions.get(t, []):
             noise.update(range(b, res.blocks[b].end))
-    done = set(e.src for e in res.edges)
+    done = set(e.src for e in res.edges if not e.native)
     res.unresolved = sorted(u for u in unres if u[0] not in done and u[0] not in noise)
     return res
 

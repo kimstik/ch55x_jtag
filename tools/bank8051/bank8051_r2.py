@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """radare2 adapter.
 
-    python3 bank8051_r2.py firmware.bin [-sel 0x9F] [-common 0x8000] [-window 0x8000] [-mask 7] [-o out.r2]
+    python3 bank8051_r2.py firmware.bin [-sel 0x9F] [-mask 7] [-o out.r2]
 
 Maps the image bank by bank, then writes the functions, basic blocks, code
 references and inline data the core recovers. radare2's own 8051 analysis
@@ -25,8 +25,7 @@ def name(lay, va):
 def main(argv):
     path, opt = argv[0], dict(zip(argv[1::2], argv[2::2]))
     num = lambda k, d: int(opt.get(k, d), 0)
-    lay = Layout(os.path.getsize(path), num("-common", "0x8000"), num("-window", "0x8000"),
-                 num("-sel", "0x9F"), num("-mask", "7"))
+    lay = Layout(os.path.getsize(path), sel=num("-sel", "0x9F"), mask=num("-mask", "7"))
     r2 = r2pipe.open(path, flags=["-n", "-N", "-a", "8051", "-e", "scr.color=0"])
     log = []
 
@@ -49,7 +48,10 @@ def main(argv):
         cmd("af+ 0x%x %s" % (f, name(lay, f)))
         for b in blocks:
             blk = res.blocks[b]
-            cmd("afb+ 0x%x 0x%x %d %s" % (f, b, blk.end - b, " ".join("0x%x" % s for s in blk.succ[:2])))
+            succ = blk.succ[:2]
+            if len(succ) == 2:
+                succ = [succ[1], succ[0]]  # afb+ wants the taken branch first, fallthrough second
+            cmd("afb+ 0x%x 0x%x %d %s" % (f, b, blk.end - b, " ".join("0x%x" % s for s in succ)))
             for s in blk.succ[2:]:
                 cmd("axc 0x%x @ 0x%x" % (s, blk.end - 1))
     for e in sorted(res.edges):

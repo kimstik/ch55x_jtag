@@ -17,8 +17,9 @@ one core, three adapters.
 * Each basic block is emulated by a small concrete 8051 interpreter. Only the
   bank select register is known at block start, from the block's own address.
   Calls and jumps into the common area are followed, so a trampoline of any
-  shape is seen writing the select register and jumping; the edge is
-  attributed to the call in the analysed block.
+  shape is seen writing the select register and jumping. An edge found
+  through a call is attributed to that call in the analysed block; one found
+  through a jump to the instruction that actually transfers.
 * A callee that pops its return address and reads bytes through `movc` is
   using inline arguments (IAR `?BCALL`): the bytes become data, flow continues
   after them.
@@ -30,8 +31,9 @@ one core, three adapters.
 * Unknown values stop a path. Unresolved computed transfers are reported with
   the instruction address; nothing is guessed.
 
-Parameters: `sel` (bank select SFR, default `0x9F` = CC2541 FMAP), `mask`,
-`common`, `window`.
+Parameters: `sel` (bank select SFR, default `0x9F` = CC2541 FMAP), `mask`.
+Only the symmetric layout (32 KB common, 32 KB window, bank N at file offset
+N*0x8000) is modelled.
 
 ## radare2
 
@@ -45,8 +47,10 @@ Result on the two CC2541 images (256 KB, 8 banks):
 
 | image | functions | edges | cross-bank | inline args | unresolved | code coverage |
 |---|---|---|---|---|---|---|
-| Demo.bin | 2247 | 9047 | 1431 | 596 | 3 | 72% of non-0xFF bytes |
-| CC2541hm10v540.bin | 2735 | 12682 | 2085 | 709 | 2 | 85% |
+| Demo.bin | 2367 | 11410 | 2166 | 756 | 52 | 93% of non-0xFF bytes |
+| CC2541hm10v540.bin | 2713 | 15423 | 2985 | 815 | 42 | 97% |
+
+The unresolved ones are `jmp @A+DPTR` with a value from RAM or XDATA.
 
 ## Ghidra
 
@@ -58,7 +62,9 @@ into the common area resolve by themselves.
 ## IDA
 
 Load the image as binary with processor 8051, run the script. The flat
-segment is replaced by one segment per bank with base `N*0x10000`.
+segment is replaced by one segment per bank with base `N*0x10000`; bank
+segments get a segment translation to the common segment so calls into it
+resolve.
 
 ## Limits
 

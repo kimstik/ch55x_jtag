@@ -1,7 +1,7 @@
 """IDA adapter. Load the raw image as a binary file with processor 8051, then
 File > Script file. The flat segment is replaced by one segment per bank with
 segment base N*0x10000, so the 8051 module resolves same-bank 16-bit targets
-and calls into the common area by itself. Cross-bank references, inline call
+by itself; a segment translation to the common segment covers calls into it. Cross-bank references, inline call
 arguments and function entries come from bank8051.analyze.
 
 Untested in IDA itself: API names were checked against the IDAPython
@@ -15,17 +15,18 @@ import ida_auto
 import ida_bytes
 import ida_ida
 import ida_loader
+import ida_pro
 import ida_segment
 import ida_xref
 from bank8051 import Layout, analyze, vectors
 
-SEL, MASK, COMMON, WINDOW = 0x9F, 0x07, 0x8000, 0x8000
+SEL, MASK = 0x9F, 0x07
 
 
 def main():
     lo, hi = ida_ida.inf_get_min_ea(), ida_ida.inf_get_max_ea()
     image = ida_bytes.get_bytes(lo, hi - lo)
-    lay = Layout(len(image), COMMON, WINDOW, SEL, MASK)
+    lay = Layout(len(image), sel=SEL, mask=MASK)
     read = lay.reader(image)
     res = analyze(read, lay, vectors(read, lay))
 
@@ -39,6 +40,9 @@ def main():
         s.perm = ida_segment.SEGPERM_READ | ida_segment.SEGPERM_EXEC
         ida_segment.add_segm_ex(s, "bank%d" % bank, "CODE", ida_segment.ADDSEG_OR_DIE)
         ida_loader.mem2base(image[off:off + size], va, off)
+        if bank:
+            # calls from a bank into the common area resolve through the translation list
+            ida_segment.set_segment_translations(va, ida_pro.eavec_t([0]))
 
     for va, size in res.inline:
         ida_bytes.create_byte(va, size, True)

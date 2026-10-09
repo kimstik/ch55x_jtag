@@ -22,7 +22,7 @@ import jarray
 from ghidra.program.model.symbol import RefType, SourceType
 from bank8051 import Layout, analyze, vectors
 
-SEL, MASK, COMMON, WINDOW = 0x9F, 0x07, 0x8000, 0x8000
+SEL, MASK = 0x9F, 0x07
 
 
 def main():
@@ -32,7 +32,7 @@ def main():
         popup("Expected exactly one memory block holding the raw image")
         return
     image = [b & 0xFF for b in getBytes(blocks[0].getStart(), int(blocks[0].getSize()))]
-    lay = Layout(len(image), COMMON, WINDOW, SEL, MASK)
+    lay = Layout(len(image), sel=SEL, mask=MASK)
     read = lay.reader(image)
     res = analyze(read, lay, vectors(read, lay))
 
@@ -53,7 +53,7 @@ def main():
             createByte(addr(va + i))
     refs = currentProgram.getReferenceManager()
     for e in res.edges:
-        if e.native:
+        if e.native or (lay.bank_of(e.dst) or 0) >= lay.nbanks:
             continue
         kind = RefType.UNCONDITIONAL_CALL if e.kind == "call" else RefType.UNCONDITIONAL_JUMP
         refs.addMemoryReference(addr(e.src), addr(e.dst), kind, SourceType.USER_DEFINED, 0)
